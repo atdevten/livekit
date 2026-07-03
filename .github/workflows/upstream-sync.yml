@@ -1,0 +1,89 @@
+name: Upstream sync
+
+# Weekly: fetch the newest upstream livekit/livekit release tag, attempt a merge into the
+# relay branch, run build + relay-package checks, and open a PR with the result. Green PR =
+# review-free glance; conflicts show up as a PR flagging exactly which files collided
+# (mesh-relay pain point B12: fork maintenance as an automated standing task).
+
+on:
+  schedule:
+    - cron: '17 6 * * 1' # Mondays 06:17 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: relay
+          fetch-depth: 0
+
+      - name: Find newest upstream release tag
+        id: upstream
+        run: |
+          git remote add upstream https://github.com/livekit/livekit.git
+          git fetch upstream --tags --quiet
+          TAG=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$TAG" HEAD; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attempt merge
+        id: merge
+        if: steps.upstream.outputs.up_to_date == 'false'
+        run: |
+          git config user.name  "upstream-sync[bot]"
+          git config user.email "upstream-sync@users.noreply.github.com"
+          BRANCH="sync/${{ steps.upstream.outputs.tag }}"
+          git checkout -b "$BRANCH"
+          if git merge --no-edit "${{ steps.upstream.outputs.tag }}"; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U > /tmp/conflicts.txt
+            git merge --abort
+            git commit --allow-empty -m "upstream sync ${{ steps.upstream.outputs.tag }}: CONFLICTS (see PR body)"
+          fi
+          git push -f origin "$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        if: steps.merge.outputs.conflict == 'false'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build + relay checks
+        if: steps.merge.outputs.conflict == 'false'
+        env:
+          GOPRIVATE: github.com/atdevten
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.MESH_RELAY_TOKEN }}@github.com/atdevten".insteadOf "https://github.com/atdevten"
+          go build ./...
+          go vet ./pkg/relay/
+          gofmt -l pkg/relay/ | (! grep .)
+
+      - name: Open PR
+        if: steps.upstream.outputs.up_to_date == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+          if [ "${{ steps.merge.outputs.conflict }}" = "true" ]; then
+            BODY="Merge of $TAG hit conflicts:\n\n\`\`\`\n$(cat /tmp/conflicts.txt 2>/dev/null)\n\`\`\`\nResolve on branch ${{ steps.merge.outputs.branch }}."
+            TITLE="upstream sync $TAG (CONFLICTS)"
+          else
+            BODY="Clean merge of $TAG; build + relay checks ran in CI."
+            TITLE="upstream sync $TAG"
+          fi
+          gh pr create --base relay --head "${{ steps.merge.outputs.branch }}" \
+            --title "$TITLE" --body "$(printf "$BODY")" || true

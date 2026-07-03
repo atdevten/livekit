@@ -45,16 +45,58 @@ local publisher ─► WebRTCReceiver ─fan-out─► DownTracks (local viewers
 
 ## Status / not wired yet
 
-`pkg/relay` compiles against v1.13.2 and the full server builds. **The room-layer wiring
-is not done** — the hooks exist but nothing calls them yet:
+`pkg/relay` compiles against v1.13.2 and the full server builds. The adapters
+(`RelayDownTrack`, `SyntheticReceiver`, `Agent`) are complete and satisfy both the SFU
+interfaces and the mesh-relay seam (compile-time asserted). **The room-layer wiring is not
+done, and one part of it is blocked** — see below.
 
-1. Track-published path → `agent.ExportTrack(receiver)`; unpublish → `UnexportTrack`.
-2. `agent.OnRelayedTrack` → create/lookup the remote participant (identity =
-   `TrackInfo.SessionID`) and announce the `SyntheticReceiver` as its published track.
-3. Downtrack subscribe/unsubscribe on synthetic receivers → `EdgeEngine.SetLayerDemand`.
-4. Node config (peer addr / listen addr) + agent lifecycle in server startup.
-5. Behavior validation: `StreamTrackerManagerConfig` zero-value, buffer sizing, and the
-   `livekit.TrackInfo` fields the room layer expects on a synthetic track.
+### Origin side (unblocked, few-line hooks)
+
+1. Track-published path (`pkg/rtc/room.go` `onTrackPublished`) → `agent.ExportTrack(track.PrimaryReceiver())`.
+2. Unpublish (`onTrackUnpublished`) → `agent.UnexportTrack(track.ID())`.
+3. Node config (peer/listen addr) + agent lifecycle in server startup.
+
+These delegate straight into `pkg/relay`; the upstream edit is a thin call each.
+
+### Edge side (BLOCKED on the participant model — this is the F↔Phase-5 boundary)
+
+`agent.OnRelayedTrack` must present the `SyntheticReceiver` as a **published track owned by a
+participant** so local clients discover and subscribe to it. Investigation of v1.13.2:
+
+- `Room.participants` is `map[identity]types.LocalParticipant`; a track is only subscribable
+  through a participant in that map.
+- `types.LocalParticipant` is a **134-method interface**, and its sole implementation
+  `rtc.ParticipantImpl` is transport-bound: `ParticipantParams` requires a `routing.MessageSink`,
+  signal transport, and PeerConnections. There is **no transport-less publisher** in OSS.
+- `IsRelayed` exists as a field threaded through the subscription path but is **never set true**
+  anywhere in OSS — it is a vestige of LiveKit Cloud's closed relay, with no constructor or
+  lifecycle behind it.
+
+So presenting a relayed track requires a publisher participant **with no WebRTC transport** —
+which is precisely the `Participant` (metadata) vs `LocalParticipant` (metadata + transport)
+split that mesh-relay's `guide.md` §4.1 and architecture §5.1 assign to the **message-bus
+control plane (Phase 5)**. Phase F's edge wiring is therefore entangled with Phase 5; it cannot
+be completed as a standalone "hook" against stock livekit.
+
+**Options (deferred to a decision):**
+
+- **v1 (single relay publisher):** one synthetic `__relay__` participant owns all relayed
+  tracks (accept temporary identity-ghosting, the documented Approach-A limit). Still requires
+  a transport-less participant, but only one, and unblocks live validation of the real wins
+  (~0 ms path, native simulcast, real decode). Smallest path to a runnable node pair.
+- **v2 (per-origin participants):** the full §4.1 split driven by bus state → true identity.
+  This is Phase 5 proper.
+
+Either way the missing primitive is a **transport-less participant**, which is Phase-5 work.
+Recommend building v1's minimal synthetic participant as the first Phase-5 deliverable, then
+completing edge wiring on top of it.
+
+### Not yet validated
+
+Nothing here has run. Every artifact is compile-only. "Room wiring done" means two fork nodes,
+publish to A, a viewer decodes the relayed track on B — not a green build. Buffer sizing,
+`StreamTrackerManagerConfig` zero-value tolerance, and the exact `livekit.TrackInfo` fields a
+synthetic track needs are all unverified until that runs.
 
 ## Building
 

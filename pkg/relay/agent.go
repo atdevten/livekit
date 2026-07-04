@@ -124,6 +124,14 @@ func (a *Agent) wake() {
 // link drops or ctx is cancelled; the caller supervises reconnection. Every currently
 // exported track is (re-)announced on the new link before new exports flow.
 func (a *Agent) RunOrigin(ctx context.Context, peer *meshrelay.PeerConn) error {
+	a.resetPendingForNewLink()
+	eng := meshrelay.NewOriginEngine(a.cfg, zapFrom(a.logger), agentSource{a}, peer)
+	return eng.Run(ctx)
+}
+
+// resetPendingForNewLink queues every exported track for (re-)announcement — a fresh link
+// starts from a clean announce state, so retirements queued for the old link are moot.
+func (a *Agent) resetPendingForNewLink() {
 	a.mu.Lock()
 	a.pending = a.pending[:0]
 	for _, rdt := range a.exported {
@@ -131,8 +139,6 @@ func (a *Agent) RunOrigin(ctx context.Context, peer *meshrelay.PeerConn) error {
 	}
 	a.closedPending = nil
 	a.mu.Unlock()
-	eng := meshrelay.NewOriginEngine(a.cfg, zapFrom(a.logger), agentSource{a}, peer)
-	return eng.Run(ctx)
 }
 
 // agentSource adapts the Agent's export stream to mesh-relay's Source seam.

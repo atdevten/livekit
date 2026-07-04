@@ -41,6 +41,7 @@ import (
 	"github.com/livekit/protocol/utils/xtwirp"
 
 	"github.com/livekit/livekit-server/pkg/config"
+	"github.com/livekit/livekit-server/pkg/relay"
 	"github.com/livekit/livekit-server/pkg/routing"
 	"github.com/livekit/livekit-server/version"
 )
@@ -58,6 +59,7 @@ type LivekitServer struct {
 	roomManager  *RoomManager
 	signalServer *SignalServer
 	turnServer   *turn.Server
+	relayService *relay.Service // fork: mesh-relay Phase F
 	currentNode  routing.LocalNode
 	running      atomic.Bool
 	doneChan     chan struct{}
@@ -186,6 +188,13 @@ func NewLivekitServer(conf *config.Config,
 		}
 	}
 
+	// fork: native inter-server relay (mesh-relay Phase F)
+	if conf.Relay.Enabled {
+		if s.relayService, err = relay.NewService(conf.Relay, currentNode.NodeID()); err != nil {
+			return
+		}
+	}
+
 	if err = router.RemoveDeadNodes(); err != nil {
 		return
 	}
@@ -306,6 +315,11 @@ func (s *LivekitServer) Start() error {
 		return err
 	}
 
+	// fork: relay links come up with the server (mesh-relay Phase F)
+	if s.relayService != nil {
+		s.relayService.Start()
+	}
+
 	httpGroup := &errgroup.Group{}
 	for _, ln := range listeners {
 		l := ln
@@ -341,6 +355,9 @@ func (s *LivekitServer) Start() error {
 		_ = s.turnServer.Close()
 	}
 
+	if s.relayService != nil {
+		s.relayService.Stop()
+	}
 	s.roomManager.Stop()
 	s.signalServer.Stop()
 	s.ioService.Stop()

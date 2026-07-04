@@ -94,6 +94,9 @@ type Config struct {
 	EnableParticipantDataBlob bool `yaml:"enable_participant_data_blob,omitempty"`
 
 	API APIConfig `yaml:"api,omitempty"`
+
+	// fork: native inter-server relay (mesh-relay Phase F); see pkg/relay and RELAY-FORK.md
+	Relay RelayConfig `yaml:"relay,omitempty"`
 }
 
 type RTCConfig struct {

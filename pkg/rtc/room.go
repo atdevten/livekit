@@ -39,6 +39,7 @@ import (
 
 	"github.com/livekit/livekit-server/pkg/agent"
 	"github.com/livekit/livekit-server/pkg/config"
+	"github.com/livekit/livekit-server/pkg/relay"
 	"github.com/livekit/livekit-server/pkg/routing"
 	"github.com/livekit/livekit-server/pkg/rtc/datatrack"
 	"github.com/livekit/livekit-server/pkg/rtc/types"
@@ -1073,6 +1074,9 @@ func (r *Room) createJoinResponseLocked(
 func (r *Room) onTrackPublished(participant types.Participant, track types.MediaTrack) {
 	r.trackManager.AddTrack(track, participant.Identity(), participant.ID())
 
+	// fork: export to relay peers (mesh-relay Phase F); no-op when the relay is disabled
+	relay.HandleTrackPublished(participant, track)
+
 	// publish participant update, since track state is changed
 	r.broadcastParticipantState(participant, broadcastOptions{skipSource: true})
 
@@ -1158,6 +1162,9 @@ func (r *Room) onTrackUpdated(p types.Participant, _ types.MediaTrack) {
 }
 
 func (r *Room) onTrackUnpublished(p types.Participant, track types.MediaTrack) {
+	// fork: stop relaying (mesh-relay Phase F); no-op when the relay is disabled
+	relay.HandleTrackUnpublished(track)
+
 	r.trackManager.RemoveTrack(track)
 	if !p.IsClosed() {
 		r.broadcastParticipantState(p, broadcastOptions{skipSource: true})

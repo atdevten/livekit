@@ -19,7 +19,9 @@ edits to upstream files, kept to a few lines each.
 | `pkg/relay/downtrack.go` | `RelayDownTrack` — implements `sfu.TrackSender`, registered on a receiver's fan-out like any subscriber; simultaneously implements mesh-relay's `SourceTrack` + `SenderReportSource`. Exports a local track to peers. |
 | `pkg/relay/receiver.go` | `SyntheticReceiver` — embeds `sfu.ReceiverBase` (the engine behind `WebRTCReceiver`), built from a relayed `TrackUpdate`'s codec params; per-layer `buffer.Buffer`s are fed by the relay instead of a WebRTC up-track. Implements mesh-relay's `SinkTrack` + `SenderReportSink`. Local downtracks attach normally. |
 | `pkg/relay/agent.go` | Per-node runtime: owns the QUIC link + engines; `ExportTrack`/`UnexportTrack` (origin side) and `OnRelayedTrack` (edge side) are the hooks the room layer calls. |
+| `pkg/relay/service.go` | Link supervisor (dial-with-backoff / accept loops) started with the server, plus the nil-safe `HandleTrackPublished`/`HandleTrackUnpublished` hooks the room calls. |
 | `pkg/relay/logger.go` | logr→zap bridge for the mesh-relay engines. |
+| `pkg/config/relay.go` | `RelayConfig` (`relay:` yaml block — `enabled`, `listen_address`, `peer_address`). |
 
 The protocol itself (QUIC + FlatBuffers, per-hop NACK, subscription gating + hysteresis,
 SR forwarding, metrics) is the imported `github.com/atdevten/mesh-relay/relay` module —
@@ -47,16 +49,34 @@ local publisher ─► WebRTCReceiver ─fan-out─► DownTracks (local viewers
 
 `pkg/relay` compiles against v1.13.2 and the full server builds. The adapters
 (`RelayDownTrack`, `SyntheticReceiver`, `Agent`) are complete and satisfy both the SFU
-interfaces and the mesh-relay seam (compile-time asserted). **The room-layer wiring is not
-done, and one part of it is blocked** — see below.
+interfaces and the mesh-relay seam (compile-time asserted). **Origin-side room wiring is
+done; edge-side wiring is blocked** — see below.
 
-### Origin side (unblocked, few-line hooks)
+### Origin side (done)
 
-1. Track-published path (`pkg/rtc/room.go` `onTrackPublished`) → `agent.ExportTrack(track.PrimaryReceiver())`.
-2. Unpublish (`onTrackUnpublished`) → `agent.UnexportTrack(track.ID())`.
-3. Node config (peer/listen addr) + agent lifecycle in server startup.
+Enable with the `relay:` config block; the server starts a `relay.Service` alongside
+`signalServer` and stops it on shutdown:
 
-These delegate straight into `pkg/relay`; the upstream edit is a thin call each.
+```yaml
+relay:
+  enabled: true
+  peer_address: 10.0.0.2:7810   # origin side: dial this edge
+  listen_address: 0.0.0.0:7810  # edge side: accept origins (may set both)
+```
+
+Upstream edits, kept to a line or two per site (B12):
+
+1. `pkg/rtc/room.go` `onTrackPublished` → `relay.HandleTrackPublished(participant, track)`;
+   it waits for receiver readiness via `AddOnReady` (a pre-media `DummyReceiver` has no
+   layer/codec info yet), then `agent.ExportTrack(receivers[0])`.
+2. `onTrackUnpublished` → `relay.HandleTrackUnpublished(track)`.
+3. `pkg/service/server.go` constructs/starts/stops the service; `pkg/config/config.go`
+   gains the one `Relay RelayConfig` field.
+
+Notes: exports never block the publish path (announcements queue in the Agent and drain
+into the link's source loop), every exported track is re-announced after a reconnect, and
+tracks published under the `__relay__` identity prefix are skipped — the cycle guard until
+Phase 4 topology lands.
 
 ### Edge side (BLOCKED on the participant model — this is the F↔Phase-5 boundary)
 

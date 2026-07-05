@@ -161,6 +161,9 @@ func (s *Service) runEdge(ctx context.Context) {
 			if err := s.agent.RunEdge(ctx, peer); err != nil && ctx.Err() == nil {
 				s.log.Warnw("relay: edge link ended", err, "remote", peer.RemoteAddr())
 			}
+			// Every publication from this link is sourceless now; the room layer tears
+			// them down. A reconnect re-announces under a fresh alias space (B7).
+			s.agent.NotifyEdgeLinkDown()
 		}()
 	}
 }
@@ -186,7 +189,7 @@ var defaultAgent atomic.Pointer[Agent]
 // receiver is ready (AddOnReady fires immediately on live receivers, and on upgrade for
 // pre-media DummyReceivers — before that, codec/layer info is incomplete). Tracks owned
 // by the relay itself are skipped (cycle guard).
-func HandleTrackPublished(participant types.Participant, track types.MediaTrack) {
+func HandleTrackPublished(room livekit.RoomName, participant types.Participant, track types.MediaTrack) {
 	agent := defaultAgent.Load()
 	if agent == nil {
 		return
@@ -200,7 +203,7 @@ func HandleTrackPublished(participant types.Participant, track types.MediaTrack)
 	}
 	recv := receivers[0] // primary codec; codec-fallback receivers are out of Phase F scope
 	recv.AddOnReady(func() {
-		if err := agent.ExportTrack(recv); err != nil {
+		if err := agent.ExportTrack(string(room), recv); err != nil {
 			agent.logger.Warnw("relay: export track failed", err, "trackID", track.ID())
 		}
 	})

@@ -98,10 +98,10 @@ func TestExportAnnounceAndRetire(t *testing.T) {
 	recvA := &fakeReceiver{id: "TR_a"}
 
 	// Exported before the link is up: must not block, must queue.
-	if err := a.ExportTrack(recvA); err != nil {
+	if err := a.ExportTrack("room", recvA); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.ExportTrack(recvA); err != nil { // idempotent per track id
+	if err := a.ExportTrack("room", recvA); err != nil { // idempotent per track id
 		t.Fatal(err)
 	}
 	if recvA.downTracks != 1 {
@@ -119,7 +119,7 @@ func TestExportAnnounceAndRetire(t *testing.T) {
 
 	// Exported while the link is live.
 	recvB := &fakeReceiver{id: "TR_b"}
-	if err := a.ExportTrack(recvB); err != nil {
+	if err := a.ExportTrack("room", recvB); err != nil {
 		t.Fatal(err)
 	}
 	if id := recvOne(t, announced, "live announce"); id != "TR_b" {
@@ -144,7 +144,7 @@ func TestExportAnnounceAndRetire(t *testing.T) {
 
 func TestUnexportBeforeLinkRetractsPending(t *testing.T) {
 	a := newTestAgent()
-	if err := a.ExportTrack(&fakeReceiver{id: "TR_gone"}); err != nil {
+	if err := a.ExportTrack("room", &fakeReceiver{id: "TR_gone"}); err != nil {
 		t.Fatal(err)
 	}
 	a.UnexportTrack("TR_gone")
@@ -159,10 +159,10 @@ func TestUnexportBeforeLinkRetractsPending(t *testing.T) {
 
 func TestReconnectReannouncesExportedTracks(t *testing.T) {
 	a := newTestAgent()
-	if err := a.ExportTrack(&fakeReceiver{id: "TR_a"}); err != nil {
+	if err := a.ExportTrack("room", &fakeReceiver{id: "TR_a"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.ExportTrack(&fakeReceiver{id: "TR_b"}); err != nil {
+	if err := a.ExportTrack("room", &fakeReceiver{id: "TR_b"}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -50,6 +50,7 @@ type queuedPkt struct {
 type RelayDownTrack struct {
 	receiver sfu.TrackReceiver
 	logger   logger.Logger
+	room     string                // room the track is published in; rides TrackUpdate.room
 	peerID   livekit.ParticipantID // synthetic subscriber identity for this relay link
 
 	pkts chan queuedPkt
@@ -69,10 +70,11 @@ var (
 // NewRelayDownTrack builds the exporter for one receiver. peerID identifies the relay
 // link this track is exported on (it plays the role of the subscriber's participant id
 // inside the SFU's downtrack bookkeeping).
-func NewRelayDownTrack(receiver sfu.TrackReceiver, peerID livekit.ParticipantID, log logger.Logger) *RelayDownTrack {
+func NewRelayDownTrack(receiver sfu.TrackReceiver, room string, peerID livekit.ParticipantID, log logger.Logger) *RelayDownTrack {
 	return &RelayDownTrack{
 		receiver: receiver,
 		logger:   log,
+		room:     room,
 		peerID:   peerID,
 		pkts:     make(chan queuedPkt, relayQueueDepth),
 		srs:      make(chan []byte, 8),
@@ -178,6 +180,7 @@ func (t *RelayDownTrack) Info() meshrelay.TrackInfo {
 
 	return meshrelay.TrackInfo{
 		SessionID:   streamIDOf(t.receiver, ti),
+		Room:        t.room,
 		TrackID:     string(t.receiver.TrackID()),
 		Kind:        kind,
 		CodecMime:   codec.MimeType,

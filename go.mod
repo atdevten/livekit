@@ -3,7 +3,7 @@ module github.com/livekit/livekit-server
 go 1.26
 
 require (
-	github.com/atdevten/mesh-relay v0.0.0-20260703041750-57930d985f08
+	github.com/atdevten/mesh-relay v0.0.0-20260705020257-37381519635b
 	github.com/bep/debounce v1.2.1
 	github.com/d5/tengo/v2 v2.17.0
 	github.com/dennwc/iters v1.2.2
@@ -76,7 +76,6 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
-	github.com/livekit/server-sdk-go/v2 v2.16.6 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/moby/moby/api v1.54.2 // indirect

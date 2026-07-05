@@ -1075,7 +1075,7 @@ func (r *Room) onTrackPublished(participant types.Participant, track types.Media
 	r.trackManager.AddTrack(track, participant.Identity(), participant.ID())
 
 	// fork: export to relay peers (mesh-relay Phase F); no-op when the relay is disabled
-	relay.HandleTrackPublished(participant, track)
+	relay.HandleTrackPublished(r.Name(), participant, track)
 
 	// publish participant update, since track state is changed
 	r.broadcastParticipantState(participant, broadcastOptions{skipSource: true})

@@ -42,6 +42,7 @@ import (
 
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/relay"
+	"github.com/livekit/livekit-server/pkg/relayrtc"
 	"github.com/livekit/livekit-server/pkg/routing"
 	"github.com/livekit/livekit-server/version"
 )
@@ -193,6 +194,19 @@ func NewLivekitServer(conf *config.Config,
 		if s.relayService, err = relay.NewService(conf.Relay, currentNode.NodeID()); err != nil {
 			return
 		}
+		// Edge-side room wiring (Phase 5a): relayed tracks are published into their room
+		// by a transport-less relay participant.
+		announcer := relayrtc.NewAnnouncer(relayrtc.AnnouncerParams{
+			GetOrCreateRoom: func(ctx context.Context, name livekit.RoomName) (relayrtc.AnnouncerRoom, error) {
+				return roomManager.getOrCreateRoom(ctx, &livekit.CreateRoomRequest{Name: string(name)})
+			},
+			ReceiverConfig:   roomManager.rtcConfig.Receiver,
+			SubscriberConfig: roomManager.rtcConfig.Subscriber,
+		})
+		agent := s.relayService.Agent()
+		agent.OnRelayedTrack(announcer.OnRelayedTrack)
+		agent.OnRelayedTrackClosed(announcer.OnRelayedTrackClosed)
+		agent.OnEdgeLinkDown(announcer.LinkDown)
 	}
 
 	if err = router.RemoveDeadNodes(); err != nil {

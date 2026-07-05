@@ -7,6 +7,7 @@ import (
 	meshrelay "github.com/atdevten/mesh-relay/relay"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/pion/rtp"
 
 	"github.com/livekit/livekit-server/pkg/sfu"
 )
@@ -37,7 +38,9 @@ type Agent struct {
 	closedPending []string                   // unexported, not yet retired on the current link
 	kick          chan struct{}              // wakes agentSource.Run after a pending change
 
-	onRelayedTrack func(*SyntheticReceiver)
+	onRelayedTrack       func(*SyntheticReceiver)
+	onRelayedTrackClosed func(*SyntheticReceiver)
+	onEdgeLinkDown       func()
 }
 
 type AgentParams struct {
@@ -61,19 +64,35 @@ func NewAgent(p AgentParams) *Agent {
 // RunEdge accepts links.
 func (a *Agent) OnRelayedTrack(fn func(*SyntheticReceiver)) { a.onRelayedTrack = fn }
 
+// OnRelayedTrackClosed registers the retraction callback: the origin sent TrackClosed
+// (its publisher unpublished), so the local synthetic publication must be torn down.
+func (a *Agent) OnRelayedTrackClosed(fn func(*SyntheticReceiver)) { a.onRelayedTrackClosed = fn }
+
+// OnEdgeLinkDown registers the link-death callback: every relayed publication from that
+// link is now sourceless and must be torn down (a reconnect re-announces from scratch
+// under a fresh alias space, B7).
+func (a *Agent) OnEdgeLinkDown(fn func()) { a.onEdgeLinkDown = fn }
+
+// NotifyEdgeLinkDown is called by the Service supervisor after an edge link ends.
+func (a *Agent) NotifyEdgeLinkDown() {
+	if fn := a.onEdgeLinkDown; fn != nil {
+		fn()
+	}
+}
+
 // ---- origin side -------------------------------------------------------------------------
 
 // ExportTrack starts relaying a locally published track. Idempotent per track id.
 // Never blocks: announcement is queued and drained by the link's source loop, so the
 // room's publish path is safe to call this even while the peer link is down.
-func (a *Agent) ExportTrack(receiver sfu.TrackReceiver) error {
+func (a *Agent) ExportTrack(room string, receiver sfu.TrackReceiver) error {
 	a.mu.Lock()
 	id := string(receiver.TrackID())
 	if _, ok := a.exported[id]; ok {
 		a.mu.Unlock()
 		return nil
 	}
-	rdt := NewRelayDownTrack(receiver, a.peerID, a.logger)
+	rdt := NewRelayDownTrack(receiver, room, a.peerID, a.logger)
 	if err := receiver.AddDownTrack(rdt); err != nil {
 		a.mu.Unlock()
 		return err
@@ -191,7 +210,42 @@ func (s agentSink) NewTrack(info meshrelay.TrackInfo) (meshrelay.SinkTrack, erro
 		s.a.logger.Warnw("relay: no OnRelayedTrack callback; relayed track not announced", nil,
 			"trackID", info.TrackID)
 	}
-	return recv.SinkTrack(), nil
+	return notifyingSinkTrack{inner: recv.SinkTrack(), recv: recv, a: s.a}, nil
+}
+
+// notifyingSinkTrack wraps the receiver's sink so a TrackClosed retraction (edge engine
+// calls Close) also reaches the room layer. It re-implements SenderReportSink explicitly:
+// embedding the SinkTrack interface value would hide the concrete type's optional
+// interface from the engine's type assertion (B4 would silently stop working).
+type notifyingSinkTrack struct {
+	inner meshrelay.SinkTrack
+	recv  *SyntheticReceiver
+	a     *Agent
+}
+
+var (
+	_ meshrelay.SinkTrack        = notifyingSinkTrack{}
+	_ meshrelay.SenderReportSink = notifyingSinkTrack{}
+)
+
+func (t notifyingSinkTrack) WriteRTP(layer uint8, pkt *rtp.Packet) error {
+	return t.inner.WriteRTP(layer, pkt)
+}
+
+func (t notifyingSinkTrack) KeyFrameRequests() <-chan uint8 { return t.inner.KeyFrameRequests() }
+
+func (t notifyingSinkTrack) WriteSenderReport(payload []byte) error {
+	if sr, ok := t.inner.(meshrelay.SenderReportSink); ok {
+		return sr.WriteSenderReport(payload)
+	}
+	return nil
+}
+
+func (t notifyingSinkTrack) Close() {
+	t.inner.Close()
+	if fn := t.a.onRelayedTrackClosed; fn != nil {
+		fn(t.recv)
+	}
 }
 
 func (s agentSink) Close() error { return nil }

@@ -52,7 +52,8 @@ local publisher ─► WebRTCReceiver ─fan-out─► DownTracks (local viewers
 `pkg/relay` compiles against v1.13.2 and the full server builds. The adapters
 (`RelayDownTrack`, `SyntheticReceiver`, `Agent`) are complete and satisfy both the SFU
 interfaces and the mesh-relay seam (compile-time asserted). **Origin-side room wiring is
-done; edge-side wiring is blocked** — see below.
+done; edge-side wiring is done** (Phase 5a + announcer) — live two-node validation is
+the remaining exit bar.
 
 ### Origin side (done)
 
@@ -106,7 +107,35 @@ ghosting trade-off). v2 — per-origin participants driven by mesh-relay's `rela
 Dynacast note: `UpdateSubscribedQuality` is accepted and ignored in v1 (all relayed
 layers flow); v2 maps it to `EdgeEngine.SetLayerDemand`.
 
-### Edge side (UNBLOCKED — wiring is the next task; investigation notes below)
+### Edge side (DONE — v1)
+
+The full announce path is wired:
+
+```text
+TrackUpdate ─► EdgeEngine ─► SyntheticReceiver ─► Announcer.OnRelayedTrack
+  ─► getOrCreateRoom(TrackUpdate.room) ─► relayrtc.Participant (join once per room,
+     NullMessageSource, AutoSubscribe=false) ─► relayrtc.MediaTrack ─► AddRelayedTrack
+  ─► room.LocalParticipantListener().OnTrackPublished ─► trackManager/broadcast/auto-subscribe
+```
+
+- **Room resolution**: mesh-relay's `TrackUpdate` gained a `room` field (appended,
+  wire-compatible) — the SDK-harness era carried it out-of-band in config. A roomless
+  announcement is dropped loudly.
+- **Retraction**: new `TrackClosed` protocol message; the origin sends it on unpublish,
+  the edge engine closes the sink track, and `Announcer.OnRelayedTrackClosed` unpublishes
+  the room track. Without it the synthetic publication outlived its source (frozen
+  viewers). Link death (`OnEdgeLinkDown`) tears everything down; a reconnect re-announces
+  under a fresh alias space (B7) and the announcer replaces publications idempotently.
+- **Lifecycle**: the `__relay__` participant joins a room on first relayed track and is
+  removed once it owns none, so empty rooms close normally.
+- **Wiring** (`pkg/service/server.go`): with `relay.enabled`, the server hands the
+  announcer `RoomManager.getOrCreateRoom` and the room-manager's receiver/subscriber
+  configs, then registers the three agent callbacks.
+
+Covered by `announcer_test.go` (publish/replace/retract/link-down/retire against a fake
+room). NOT yet validated live — see below.
+
+### Pre-Phase-5a investigation notes (kept for context)
 
 `agent.OnRelayedTrack` must present the `SyntheticReceiver` as a **published track owned by a
 participant** so local clients discover and subscribe to it. Investigation of v1.13.2:

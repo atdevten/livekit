@@ -205,13 +205,32 @@ func HandleTrackPublished(room livekit.RoomName, participant types.Participant, 
 	recv.AddOnReady(func() {
 		if err := agent.ExportTrack(string(room), recv); err != nil {
 			agent.logger.Warnw("relay: export track failed", err, "trackID", track.ID())
+			return
+		}
+		// Register relay demand with dynacast, or it pauses the publisher's layers
+		// ~10 s after publish when no LOCAL subscriber exists (RelayDownTrack attaches
+		// to the receiver directly, bypassing the subscription layer dynacast counts).
+		// This is the hook Cloud's closed relay drives via UpdateSubscribedQuality.
+		// v1 pins HIGH (all layers flow to the relay); v2 maps live Subscribe masks.
+		if lmt, ok := track.(types.LocalMediaTrack); ok {
+			lmt.NotifySubscriberNodeMaxQuality(relayNodeID(agent), []types.SubscribedCodecQuality{
+				{CodecMime: recv.Mime(), Quality: livekit.VideoQuality_HIGH},
+			})
 		}
 	})
+}
+
+// relayNodeID labels the relay link as a subscriber "node" in dynacast bookkeeping.
+func relayNodeID(agent *Agent) livekit.NodeID {
+	return livekit.NodeID(agent.peerID)
 }
 
 // HandleTrackUnpublished stops relaying a track when its local publisher unpublishes.
 func HandleTrackUnpublished(track types.MediaTrack) {
 	if agent := defaultAgent.Load(); agent != nil {
 		agent.UnexportTrack(track.ID())
+		if lmt, ok := track.(types.LocalMediaTrack); ok {
+			lmt.NotifySubscriberNodeMaxQuality(relayNodeID(agent), nil)
+		}
 	}
 }

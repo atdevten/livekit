@@ -168,12 +168,35 @@ Either way the missing primitive is a **transport-less participant**, which is P
 Recommend building v1's minimal synthetic participant as the first Phase-5 deliverable, then
 completing edge wiring on top of it.
 
-### Not yet validated
+### Live validation (2026-07-05) — first end-to-end run PASSED
 
-Nothing here has run. Every artifact is compile-only. "Room wiring done" means two fork nodes,
-publish to A, a viewer decodes the relayed track on B — not a green build. Buffer sizing,
-`StreamTrackerManagerConfig` zero-value tolerance, and the exact `livekit.TrackInfo` fields a
-synthetic track needs are all unverified until that runs.
+Two fork nodes on loopback (A `peer_address` → B `listen_address: :7810`), demo H264
+simulcast published to A via `lk`, subscriber joined B with `--auto-subscribe`:
+
+```text
+alice ─WebRTC→ A: RelayDownTrack (3 layers, native tap) ─QUIC→
+B: SyntheticReceiver → __relay__ transport-less participant → room pipeline →
+bob: "track subscribed {participant: __relay__, trackID: TR_..., kind: video}"
+```
+
+Observed: ~28k packets / ~30 MB relayed steady, `dgram_dropped_mtu: 0`,
+`parse_errors: 0`, SR forwarding live (350+), cross-relay keyframes served, participant
+visible via the standard API (`lk room participants list` → `__relay__ (ACTIVE) tracks: 1`).
+
+**Bug found and fixed during the run — dynacast pause**: ~10 s after publish, node A told
+alice's client to disable every simulcast layer ("no subscribers") and relayed media froze
+at 2311 packets. `RelayDownTrack` attaches to the receiver directly, bypassing the
+subscription accounting dynacast aggregates. Fix: on export, register relay demand via
+`types.LocalMediaTrack.NotifySubscriberNodeMaxQuality` — the exact hook LiveKit Cloud's
+closed relay drives through `UpdateSubscribedQuality`. v1 pins HIGH (all layers flow);
+v2 maps live relay Subscribe masks. Cleared on unexport.
+
+Still open before calling Phase F done:
+- visual decode check (meet client) — RTP delivery + codec params proven, pixels not eyeballed
+- simulcast quality switch under a real viewer; SR lip-sync measurement (audio+video)
+- origin identity: `TrackUpdate.session_id` currently carries the participant SID
+  (`PA_...`) rather than the identity (`alice`) — `streamIDOf` picks the stream id; fix
+  alongside v2 per-origin participants
 
 ## Building
 

@@ -22,6 +22,8 @@ edits to upstream files, kept to a few lines each.
 | `pkg/relay/service.go` | Link supervisor (dial-with-backoff / accept loops) started with the server, plus the nil-safe `HandleTrackPublished`/`HandleTrackUnpublished` hooks the room calls. |
 | `pkg/relay/logger.go` | logr→zap bridge for the mesh-relay engines. |
 | `pkg/config/relay.go` | `RelayConfig` (`relay:` yaml block — `enabled`, `listen_address`, `peer_address`). |
+| `pkg/relayrtc/participant.go` | **`Participant` — the transport-less publisher (Phase 5a)**: full `types.LocalParticipant`, no PeerConnection; transport/signal/migration methods are no-ops, media enters via SyntheticReceivers. Separate package because `pkg/rtc` already imports `pkg/relay` (origin hooks) and this side must import `pkg/rtc`. |
+| `pkg/relayrtc/mediatrack.go` | `MediaTrack` — wraps upstream `rtc.MediaTrackReceiver` with `IsRelayed: true` (first real use of the vestige flag) around a `SyntheticReceiver`; downtrack fan-out and subscription bookkeeping are untouched upstream code. |
 
 The protocol itself (QUIC + FlatBuffers, per-hop NACK, subscription gating + hysteresis,
 SR forwarding, metrics) is the imported `github.com/atdevten/mesh-relay/relay` module —
@@ -78,7 +80,33 @@ into the link's source loop), every exported track is re-announced after a recon
 tracks published under the `__relay__` identity prefix are skipped — the cycle guard until
 Phase 4 topology lands.
 
-### Edge side (BLOCKED on the participant model — this is the F↔Phase-5 boundary)
+### Phase 5a — transport-less participant (LANDED; unblocks edge wiring)
+
+`pkg/relayrtc` provides the missing primitive. Feasibility findings that shaped it
+(step-0 pass, 2026-07-04/05):
+
+- **No concrete `*ParticipantImpl` downcasts** exist in non-test code — the interface
+  route is safe, guarded by `var _ types.LocalParticipant = (*Participant)(nil)`.
+- **Subscription never touches the publisher participant** beyond `HasPermission`:
+  `ResolveMediaTrackForSubscriber` resolves through `room.trackManager`. So ~25 methods
+  are real (identity/state/track registry/permissions/loop-safety), the rest no-op.
+- **The publish pipeline needs no room edits**: firing
+  `room.LocalParticipantListener().OnTrackPublished(p, track)` runs `trackManager.AddTrack`,
+  the participant broadcast, and auto-subscribe of existing viewers — upstream code.
+- **`MediaTrackReceiverParams.IsRelayed` finally earns its keep**: `relayrtc.MediaTrack`
+  is a thin wrapper over `rtc.MediaTrackReceiver` + `SetupReceiver(syntheticReceiver)`.
+- Join traps handled: `Verify()` must return true (1-minute join reaper), Room.Join needs
+  a non-nil `routing.MessageSource` (`NewNullMessageSource`), `SubscriberAsPrimary` false
+  skips the subscriber-PC path.
+
+v1 identity model: one `__relay__` participant owns all relayed tracks (documented
+ghosting trade-off). v2 — per-origin participants driven by mesh-relay's `relay/bus`
+`ParticipantUpdate` state (landed there 2026-07-04) — reuses this primitive unchanged.
+
+Dynacast note: `UpdateSubscribedQuality` is accepted and ignored in v1 (all relayed
+layers flow); v2 maps it to `EdgeEngine.SetLayerDemand`.
+
+### Edge side (UNBLOCKED — wiring is the next task; investigation notes below)
 
 `agent.OnRelayedTrack` must present the `SyntheticReceiver` as a **published track owned by a
 participant** so local clients discover and subscribe to it. Investigation of v1.13.2:
